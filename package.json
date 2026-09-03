@@ -1,16 +1,10 @@
 {
   "name": "webflow-sheets-sync",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "description": "Sync Google Sheets to Webflow CMS",
+  "main": "api/sync.js",
   "dependencies": {
-    "googleapis": "^178.0.0",
-    "webflow-api": "^3.3.4"
+    "webflow-api": "^3.3.4",
+    "googleapis": "^178.0.0"
   }
 }

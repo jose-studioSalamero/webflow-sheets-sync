@@ -1,5 +1,5 @@
 const { google } = require("googleapis");
-const { Webflow } = require("@webflow/js-webflow-api");
+const { WebflowClient } = require('webflow-api');
 
 // Initialize Google Sheets
 const auth = new google.auth.GoogleAuth({
@@ -13,7 +13,7 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 
 // Initialize Webflow
-const webflow = new Webflow({ token: process.env.WEBFLOW_API_TOKEN });
+const webflow = new WebflowClient({ accessToken: WEBFLOW_API_TOKEN });
 
 // Helper function to parse date strings
 function parseEventDate(dateStr) {
