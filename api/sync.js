@@ -1,57 +1,15 @@
 const { GoogleAuth } = require('google-auth-library');
 
-const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
-const WEBFLOW_COLLECTION_ID = process.env.WEBFLOW_COLLECTION_ID;
+const WEBFLOW_TOKEN = process.env.WEBFLOW_TOKEN;
+const SITE_ID = '6a705d088ea81dba5d21cc45';
+const COLLECTION_ID = '6a79abe171f09344bb01ff15';
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
-function parseDateTime(dateStr, timeStr) {
-  if (!dateStr) return null;
-  
-  try {
-    // Parse date in format like "9/6/2024"
-    const [month, day, year] = dateStr.split('/').map(Number);
-    
-    // Parse time if provided, otherwise use midnight
-    let hours = 0, minutes = 0;
-    if (timeStr) {
-      const timeMatch = timeStr.match(/(\d+):(\d+)\s*(AM|PM)?/i);
-      if (timeMatch) {
-        hours = parseInt(timeMatch[1]);
-        minutes = parseInt(timeMatch[2]);
-        const period = timeMatch[3];
-        
-        if (period && period.toUpperCase() === 'PM' && hours !== 12) {
-          hours += 12;
-        } else if (period && period.toUpperCase() === 'AM' && hours === 12) {
-          hours = 0;
-        }
-      }
-    }
-    
-    // Create date in Hong Kong timezone (UTC+8)
-    const date = new Date(year, month - 1, day, hours, minutes);
-    return date.toISOString();
-  } catch (error) {
-    console.error('Date parse error:', error, dateStr, timeStr);
-    return null;
-  }
-}
+const SHEET_TAB = 'Untitled'; // The actual sheet tab name
 
-function createSlug(title, eventId) {
-  if (!title) return `event-${eventId}`;
-  
-  return title
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '') // Remove special characters
-    .replace(/\s+/g, '-')      // Replace spaces with hyphens
-    .replace(/-+/g, '-')       // Replace multiple hyphens with single
-    .substring(0, 100)         // Limit length
-    + `-${eventId}`;           // Add unique ID
-}
-
-async function getGoogleSheetsData() {
+async function fetchGoogleSheetData() {
   const auth = new GoogleAuth({
     credentials: {
       client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -63,86 +21,56 @@ async function getGoogleSheetsData() {
   const client = await auth.getClient();
   const accessToken = await client.getAccessToken();
 
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/Events!A:I`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken.token}`,
-      },
-    }
-  );
+  const range = `${SHEET_TAB}!A:Z`; // Get all columns
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${encodeURIComponent(range)}`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken.token}`,
+    },
+  });
 
   if (!response.ok) {
-    throw new Error(`Google Sheets fetch failed: ${response.status} ${response.statusText}`);
+    const error = await response.text();
+    throw new Error(`Google Sheets fetch failed: ${response.status} ${response.statusText} - ${error}`);
   }
 
   const data = await response.json();
   return data.values || [];
 }
 
-async function createOrUpdateWebflowItem(event) {
-  const eventId = event['Event ID']?.toString();
-  const title = event['Event Title'];
+function parseDateTime(dateStr, timeStr, timezone = 'Asia/Hong_Kong') {
+  if (!dateStr || !timeStr) return null;
   
-  if (!title || !eventId) {
-    return { success: false, error: 'Missing required fields: title or event ID' };
-  }
-
-  const slug = createSlug(title, eventId);
-  const startDateTime = parseDateTime(event['Start Date'], event['Start Time']);
-  const endDateTime = parseDateTime(event['End Date'], event['End Time']);
-
-  const itemData = {
-    fieldData: {
-      "name": title,
-      "slug": slug,
-      "start-date-time": startDateTime,
-      "end-date-time": endDateTime,
-      "location": event['Location'] || null,
-      "short-description": event['Short Description'] || null,
-      "description": event['Description'] || null,
-      "rsvp-link": event['RSVP Link'] || null,
-    }
-  };
-
-  // Remove null values
-  Object.keys(itemData.fieldData).forEach(key => {
-    if (itemData.fieldData[key] === null || itemData.fieldData[key] === '') {
-      delete itemData.fieldData[key];
-    }
-  });
-
   try {
-    // Try to create new item
-    const response = await fetch(
-      `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
-          "Content-Type": "application/json",
-          "accept-version": "1.0.0"
-        },
-        body: JSON.stringify(itemData)
-      }
-    );
-
-    const responseData = await response.json();
-
-    if (response.ok) {
-      return { success: true, action: 'created', data: responseData };
-    } else {
-      return { 
-        success: false, 
-        error: responseData.message || JSON.stringify(responseData) 
-      };
-    }
+    // Parse date: "2026-09-02T04:00:00.000Z"
+    const date = new Date(dateStr);
+    
+    // Parse time: "2026-09-02T04:00:00.000Z" 
+    const time = new Date(timeStr);
+    
+    // Combine them
+    const combined = new Date(date);
+    combined.setHours(time.getHours(), time.getMinutes(), time.getSeconds());
+    
+    return combined.toISOString();
   } catch (error) {
-    return { success: false, error: error.message };
+    console.error('DateTime parse error:', error, { dateStr, timeStr });
+    return null;
   }
 }
 
-function sleep(ms) {
+function createSlug(title, eventId) {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .substring(0, 200);
+  
+  return `${slug}-${eventId}`;
+}
+
+async function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
@@ -152,52 +80,111 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Fetch data from Google Sheets
-    const rows = await getGoogleSheetsData();
+    // Fetch data from Google Sheet
+    const rows = await fetchGoogleSheetData();
     
-    if (rows.length === 0) {
-      return res.status(200).json({ 
-        success: true, 
-        message: 'No data in sheet',
-        total: 0 
-      });
+    if (rows.length < 2) {
+      return res.status(400).json({ error: 'Sheet has no data' });
     }
 
-    // Parse headers and data
     const headers = rows[0];
     const dataRows = rows.slice(1);
 
-    const events = dataRows.map(row => {
-      const event = {};
-      headers.forEach((header, index) => {
-        event[header] = row[index] || '';
-      });
-      return event;
-    });
+    // Map column indices
+    const colMap = {
+      event_id: headers.indexOf('event_id'),
+      brand: headers.indexOf('brand'),
+      title: headers.indexOf('title'),
+      status: headers.indexOf('status'),
+      listed: headers.indexOf('listed'),
+      start_datetime: headers.indexOf('start_datetime'),
+      end_datetime: headers.indexOf('end_datetime'),
+      timezone: headers.indexOf('timezone'),
+      venue_id: headers.indexOf('venue_id'),
+    };
 
-    // Process events with rate limiting
+    console.log('Column mapping:', colMap);
+    console.log(`Processing ${dataRows.length} rows`);
+
     let created = 0;
     let updated = 0;
     let skipped = 0;
     const errors = [];
 
-    for (const event of events) {
-      const result = await createOrUpdateWebflowItem(event);
-      
-      if (result.success) {
-        if (result.action === 'created') created++;
-        else if (result.action === 'updated') updated++;
-      } else {
-        errors.push({
-          event_id: event['Event ID'],
-          title: event['Event Title'],
-          error: result.error
-        });
+    // Process each row
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i];
+      const event_id = row[colMap.event_id];
+      const title = row[colMap.title];
+      const status = row[colMap.status];
+      const listed = row[colMap.listed];
+
+      // Skip if not live and listed
+      if (status !== 'live' || listed !== 'TRUE') {
         skipped++;
+        continue;
       }
 
-      // Rate limiting: 2 requests per second max
-      await sleep(600);
+      const start_datetime = row[colMap.start_datetime];
+      const end_datetime = row[colMap.end_datetime];
+      const timezone = row[colMap.timezone];
+
+      try {
+        const startDate = parseDateTime(start_datetime, start_datetime, timezone);
+        const endDate = parseDateTime(end_datetime, end_datetime, timezone);
+
+        const fieldData = {
+          name: title,
+          slug: createSlug(title, event_id),
+          'start-date-time': startDate,
+          'end-date-time': endDate,
+        };
+
+        console.log(`Processing event ${i + 1}/${dataRows.length}: ${title}`);
+        console.log('Field data:', JSON.stringify(fieldData, null, 2));
+
+        // Create item in Webflow
+        const webflowResponse = await fetch(
+          `https://api.webflow.com/v2/collections/${COLLECTION_ID}/items`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${WEBFLOW_TOKEN}`,
+              'Content-Type': 'application/json',
+              'accept': 'application/json',
+            },
+            body: JSON.stringify({
+              fieldData,
+              isDraft: false,
+            }),
+          }
+        );
+
+        const responseData = await webflowResponse.json();
+
+        if (!webflowResponse.ok) {
+          console.error(`Failed to create item for event ${event_id}:`, responseData);
+          errors.push({
+            event_id,
+            title,
+            error: responseData.message || 'Validation Error',
+          });
+        } else {
+          console.log(`✓ Created: ${title}`);
+          created++;
+        }
+
+        // Rate limiting: 60 requests per minute = 1 per second
+        await delay(1100);
+
+      } catch (error) {
+        console.error(`Error processing row ${i}:`, error);
+        errors.push({
+          event_id,
+          title,
+          error: error.message,
+        });
+      }
     }
 
     res.status(200).json({
@@ -205,15 +192,15 @@ export default async function handler(req, res) {
       created,
       updated,
       skipped,
-      total: events.length,
-      errors: errors.slice(0, 10) // Only return first 10 errors
+      total: dataRows.length,
+      errors,
     });
 
   } catch (error) {
     console.error('Sync error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      error: error.message,
     });
   }
 }
