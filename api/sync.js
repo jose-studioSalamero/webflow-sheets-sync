@@ -20,7 +20,7 @@ module.exports = async (req, res) => {
     // Fetch data from Google Sheets
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`, // Adjust columns as needed
+      range: `${SHEET_NAME}!A:N`,
     });
 
     const rows = response.data.values;
@@ -35,9 +35,20 @@ module.exports = async (req, res) => {
     // Initialize Webflow client
     const webflow = new WebflowClient({ accessToken: WEBFLOW_API_TOKEN });
 
-    // Get existing items to check for duplicates
-    const existingItems = await webflow.collections.items.listItems(WEBFLOW_COLLECTION_ID);
-    const existingEventIds = new Set(existingItems.items.map(item => item.fieldData.event_id));
+    // Get existing items to check for duplicates (simplified)
+    let existingEventIds = new Set();
+    try {
+      const existingResponse = await webflow.collections.items.listItems(WEBFLOW_COLLECTION_ID);
+      if (existingResponse && existingResponse.items) {
+        existingEventIds = new Set(
+          existingResponse.items
+            .map(item => item.fieldData?.slug)
+            .filter(Boolean)
+        );
+      }
+    } catch (listError) {
+      console.log('Could not fetch existing items, proceeding anyway:', listError.message);
+    }
 
     let created = 0;
     let skipped = 0;
@@ -50,37 +61,54 @@ module.exports = async (req, res) => {
         rowData[header] = row[index] || '';
       });
 
-      // Skip if event_id already exists
-      if (existingEventIds.has(rowData.event_id)) {
-        skipped++;
-        continue;
-      }
-
       // Skip if missing required fields
       if (!rowData.title || !rowData.event_id) {
         skipped++;
         continue;
       }
 
+      // Skip if event_id already exists
+      if (existingEventIds.has(rowData.event_id)) {
+        skipped++;
+        continue;
+      }
+
       try {
-        // Prepare item data with CORRECT field names from Webflow
+        // Prepare item data
         const itemData = {
+          isArchived: false,
+          isDraft: false,
           fieldData: {
-            name: rowData.title, // Required field
-            slug: rowData.event_id, // Required field - using event_id as slug
-            'start-date-time': rowData.start_datetime || null,
-            'end-date-time': rowData.end_datetime || null,
-            location: rowData.venue_name || '',
-            description: rowData.summary || '',
-            'short-description': rowData.summary ? rowData.summary.substring(0, 200) : '',
-            'rsvp-link': rowData.eventbrite_url ? {
-              url: rowData.eventbrite_url,
-              target: '_blank'
-            } : null
+            name: rowData.title,
+            slug: rowData.event_id,
           }
         };
 
-        // Handle image if present
+        // Add optional fields only if they exist
+        if (rowData.start_datetime) {
+          itemData.fieldData['start-date-time'] = rowData.start_datetime;
+        }
+        
+        if (rowData.end_datetime) {
+          itemData.fieldData['end-date-time'] = rowData.end_datetime;
+        }
+        
+        if (rowData.venue_name) {
+          itemData.fieldData.location = rowData.venue_name;
+        }
+        
+        if (rowData.summary) {
+          itemData.fieldData.description = rowData.summary;
+          itemData.fieldData['short-description'] = rowData.summary.substring(0, 200);
+        }
+        
+        if (rowData.eventbrite_url) {
+          itemData.fieldData['rsvp-link'] = {
+            url: rowData.eventbrite_url,
+            target: '_blank'
+          };
+        }
+        
         if (rowData.image_url) {
           itemData.fieldData.image = {
             url: rowData.image_url
@@ -90,6 +118,7 @@ module.exports = async (req, res) => {
         // Create item in Webflow
         await webflow.collections.items.createItem(WEBFLOW_COLLECTION_ID, itemData);
         created++;
+        existingEventIds.add(rowData.event_id); // Add to set to avoid duplicate attempts
 
       } catch (error) {
         errors.push({
