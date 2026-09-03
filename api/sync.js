@@ -1,163 +1,233 @@
-const { google } = require('googleapis');
-const { WebflowClient } = require('webflow-api');
+// Configuration
+const GOOGLE_SHEET_ID = "1NUBPIj4fZPEb6Y-5yVDn3wBDL_bYw7LSQP-KPVaP_Bw";
+const SHEET_NAME = "Untitled";
+const WEBFLOW_COLLECTION_ID = "66f6f0b3c9e1dc700a85a10d";
+const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
 
-// Validate environment variables
-const requiredEnvVars = [
-  'GOOGLE_SERVICE_ACCOUNT',
-  'SPREADSHEET_ID',
-  'SHEET_NAME',
-  'WEBFLOW_API_TOKEN',
-  'WEBFLOW_COLLECTION_ID'
-];
-
-const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
-
-if (missingEnvVars.length > 0) {
-  throw new Error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
+// Helper function to clean and validate URL
+function cleanUrl(value) {
+  if (!value) return null;
+  
+  // If it's an object, try to extract URL from it
+  if (typeof value === 'object') {
+    if (value.url) return value.url;
+    if (value.href) return value.href;
+    return null;
+  }
+  
+  // Convert to string and trim
+  const urlString = String(value).trim();
+  
+  // If empty, return null
+  if (!urlString || urlString === '') return null;
+  
+  // Basic URL validation
+  try {
+    new URL(urlString);
+    return urlString;
+  } catch (e) {
+    console.log(`Invalid URL: ${urlString}`);
+    return null;
+  }
 }
 
-const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const SHEET_NAME = process.env.SHEET_NAME;
-const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
-const WEBFLOW_COLLECTION_ID = process.env.WEBFLOW_COLLECTION_ID;
+// Helper function to clean single-line text (remove line breaks)
+function cleanSingleLineText(value) {
+  if (!value) return null;
+  
+  // Convert to string, remove all line breaks, and trim
+  return String(value)
+    .replace(/\\n/g, ' ')  // Replace literal \n
+    .replace(/\n/g, ' ')   // Replace actual line breaks
+    .replace(/\r/g, ' ')   // Replace carriage returns
+    .replace(/\s+/g, ' ')  // Replace multiple spaces with single space
+    .trim();
+}
 
-module.exports = async (req, res) => {
+// Helper function to transform Google Sheets data to Webflow format
+function transformToWebflowFormat(row) {
+  const fieldData = {
+    "event-id": row["event-id"] || null,
+    "name": row["name"] || "Untitled Event",
+    "slug": row["slug"] || null,
+    "tags": row["tags"] || null,
+    "rsvp-link": cleanUrl(row["rsvp-link"]),  // Clean URL
+    "short-description": cleanSingleLineText(row["short-description"]),  // Remove line breaks
+    "description": row["description"] || null,
+    "venue": row["venue"] || null,
+    "location": row["location"] || null,
+    "start-date": row["start-date"] || null,
+    "end-date": row["end-date"] || null,
+    "organizer-email": row["organizer-email"] || null,
+    "ticket-required": row["ticket-required"] === "TRUE" || row["ticket-required"] === true,
+    "going": parseInt(row["going"]) || 0,
+    "capacity": parseInt(row["capacity"]) || 0
+  };
+
+  return {
+    id: row["_id"] || null,  // Webflow item ID if updating
+    fieldData: fieldData
+  };
+}
+
+// Main sync function
+async function syncGoogleSheetToWebflow() {
   try {
-    // Authenticate with Google Sheets
-    const auth = new google.auth.GoogleAuth({
-      credentials: GOOGLE_SERVICE_ACCOUNT,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
-
-    const sheets = google.sheets({ version: 'v4', auth });
+    console.log("Starting sync from Google Sheets to Webflow...");
 
     // Fetch data from Google Sheets
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`,
+    const sheetResponse = await fetch(
+      `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${SHEET_NAME}`
+    );
+    const sheetText = await sheetResponse.text();
+    const jsonData = JSON.parse(sheetText.substring(47, sheetText.length - 2));
+
+    // Parse Google Sheets data
+    const headers = jsonData.table.cols.map(col => col.label);
+    const rows = jsonData.table.rows.map(row => {
+      const rowData = {};
+      row.c.forEach((cell, index) => {
+        rowData[headers[index]] = cell ? cell.v : null;
+      });
+      return rowData;
     });
 
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) {
-      return res.status(200).json({ message: 'No data found in sheet' });
-    }
+    console.log(`Found ${rows.length} rows in Google Sheets`);
 
-    // Parse headers and rows
-    const headers = rows[0];
-    const dataRows = rows.slice(1);
-
-    // Initialize Webflow client
-    const webflow = new WebflowClient({ accessToken: WEBFLOW_API_TOKEN });
-
-    // Get existing items to check for duplicates
-    let existingEventIds = new Set();
-    try {
-      const existingResponse = await webflow.collections.items.listItems(WEBFLOW_COLLECTION_ID);
-      if (existingResponse && existingResponse.items) {
-        existingEventIds = new Set(
-          existingResponse.items
-            .map(item => item.fieldData?.slug)
-            .filter(Boolean)
-        );
-      }
-    } catch (listError) {
-      console.log('Could not fetch existing items, proceeding anyway:', listError.message);
-    }
-
+    // Track sync results
     let created = 0;
+    let updated = 0;
     let skipped = 0;
-    const errors = [];
+    let errors = [];
 
     // Process each row
-    for (const row of dataRows) {
-      const rowData = {};
-      headers.forEach((header, index) => {
-        rowData[header] = row[index] || '';
-      });
-
-      // Skip if missing required fields
-      if (!rowData.title || !rowData.event_id) {
-        skipped++;
-        continue;
-      }
-
-      // Skip if event_id already exists
-      if (existingEventIds.has(rowData.event_id)) {
-        skipped++;
-        continue;
-      }
-
+    for (const row of rows) {
       try {
-        // Prepare item data
-        const itemData = {
-          isArchived: false,
-          isDraft: false,
-          fieldData: {
-            name: rowData.title,
-            slug: rowData.event_id,
+        // Skip rows without event-id
+        if (!row["event-id"]) {
+          skipped++;
+          continue;
+        }
+
+        // Transform data to Webflow format
+        const webflowItem = transformToWebflowFormat(row);
+
+        // Check if item exists in Webflow by event-id
+        const existingItemResponse = await fetch(
+          `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items?fieldData.event-id=${row["event-id"]}`,
+          {
+            headers: {
+              Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+              "accept-version": "1.0.0"
+            }
           }
-        };
+        );
 
-        // Add optional fields only if they exist
-        if (rowData.start_datetime) {
-          itemData.fieldData['start-date-time'] = rowData.start_datetime;
-        }
-        
-        if (rowData.end_datetime) {
-          itemData.fieldData['end-date-time'] = rowData.end_datetime;
-        }
-        
-        if (rowData.venue_name) {
-          itemData.fieldData.location = rowData.venue_name;
-        }
-        
-        if (rowData.summary) {
-          itemData.fieldData.description = rowData.summary;
-          itemData.fieldData['short-description'] = rowData.summary.substring(0, 200);
-        }
-        
-        if (rowData.eventbrite_url) {
-          itemData.fieldData['rsvp-link'] = {
-            url: rowData.eventbrite_url,
-            target: '_blank'
-          };
-        }
-        
-        if (rowData.image_url) {
-          itemData.fieldData.image = {
-            url: rowData.image_url
-          };
+        const existingItems = await existingItemResponse.json();
+
+        if (existingItems.items && existingItems.items.length > 0) {
+          // Update existing item
+          const itemId = existingItems.items[0].id;
+          const updateResponse = await fetch(
+            `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items/${itemId}`,
+            {
+              method: "PATCH",
+              headers: {
+                Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+                "Content-Type": "application/json",
+                "accept-version": "1.0.0"
+              },
+              body: JSON.stringify({ fieldData: webflowItem.fieldData })
+            }
+          );
+
+          if (updateResponse.ok) {
+            updated++;
+            console.log(`Updated: ${row["name"]} (${row["event-id"]})`);
+          } else {
+            const errorData = await updateResponse.json();
+            errors.push({
+              event_id: row["event-id"],
+              title: row["name"],
+              error: `${errorData.message || 'Update failed'}\nStatus code: ${updateResponse.status}\nBody: ${JSON.stringify(errorData, null, 2)}`
+            });
+            console.error(`Error updating ${row["name"]}:`, errorData);
+          }
+        } else {
+          // Create new item
+          const createResponse = await fetch(
+            `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+                "Content-Type": "application/json",
+                "accept-version": "1.0.0"
+              },
+              body: JSON.stringify({ fieldData: webflowItem.fieldData })
+            }
+          );
+
+          if (createResponse.ok) {
+            created++;
+            console.log(`Created: ${row["name"]} (${row["event-id"]})`);
+          } else {
+            const errorData = await createResponse.json();
+            errors.push({
+              event_id: row["event-id"],
+              title: row["name"],
+              error: `${errorData.message || 'Create failed'}\nStatus code: ${createResponse.status}\nBody: ${JSON.stringify(errorData, null, 2)}`
+            });
+            console.error(`Error creating ${row["name"]}:`, errorData);
+          }
         }
 
-        // Create item in Webflow
-        await webflow.collections.items.createItem(WEBFLOW_COLLECTION_ID, itemData);
-        created++;
-        existingEventIds.add(rowData.event_id);
+        // Rate limiting: wait 100ms between requests
+        await new Promise(resolve => setTimeout(resolve, 100));
 
       } catch (error) {
         errors.push({
-          event_id: rowData.event_id,
-          title: rowData.title,
+          event_id: row["event-id"],
+          title: row["name"],
           error: error.message
         });
+        console.error(`Error processing ${row["name"]}:`, error);
       }
     }
 
-    res.status(200).json({
+    // Return summary
+    return {
       success: true,
       created,
+      updated,
       skipped,
-      total: dataRows.length,
-      errors: errors.length > 0 ? errors : undefined
-    });
+      total: rows.length,
+      errors
+    };
 
   } catch (error) {
-    console.error('Sync error:', error);
-    res.status(500).json({
+    console.error("Sync failed:", error);
+    return {
       success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
+    };
+  }
+}
+
+// Vercel serverless function handler
+export default async function handler(req, res) {
+  // Only allow POST requests
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    const result = await syncGoogleSheetToWebflow();
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
     });
   }
-};
+}
