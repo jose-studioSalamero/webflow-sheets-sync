@@ -4,24 +4,92 @@ const SHEET_NAME = "Untitled";
 const WEBFLOW_COLLECTION_ID = "66f6f0b3c9e1dc700a85a10d";
 const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
 
+// Helper function to create JWT for Google API
+function createJWT(serviceAccount) {
+  const header = {
+    alg: "RS256",
+    typ: "JWT"
+  };
+
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: serviceAccount.client_email,
+    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now
+  };
+
+  // Base64 URL encode
+  const base64UrlEncode = (obj) => {
+    return Buffer.from(JSON.stringify(obj))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  };
+
+  const headerEncoded = base64UrlEncode(header);
+  const payloadEncoded = base64UrlEncode(payload);
+  const signatureInput = `${headerEncoded}.${payloadEncoded}`;
+
+  // Sign with private key
+  const crypto = require('crypto');
+  const sign = crypto.createSign('RSA-SHA256');
+  sign.update(signatureInput);
+  const signature = sign.sign(serviceAccount.private_key, 'base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+  return `${signatureInput}.${signature}`;
+}
+
+// Get access token from Google
+async function getGoogleAccessToken() {
+  const serviceAccountKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  
+  if (!serviceAccountKey) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY environment variable not set");
+  }
+
+  const serviceAccount = JSON.parse(serviceAccountKey);
+  const jwt = createJWT(serviceAccount);
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: jwt
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to get access token: ${error}`);
+  }
+
+  const data = await response.json();
+  return data.access_token;
+}
+
 // Helper function to clean and validate URL
 function cleanUrl(value) {
   if (!value) return null;
   
-  // If it's an object, try to extract URL from it
   if (typeof value === 'object') {
     if (value.url) return value.url;
     if (value.href) return value.href;
     return null;
   }
   
-  // Convert to string and trim
   const urlString = String(value).trim();
   
-  // If empty, return null
   if (!urlString || urlString === '') return null;
   
-  // Basic URL validation
   try {
     new URL(urlString);
     return urlString;
@@ -35,62 +103,12 @@ function cleanUrl(value) {
 function cleanSingleLineText(value) {
   if (!value) return null;
   
-  // Convert to string, remove all line breaks, and trim
   return String(value)
-    .replace(/\\n/g, ' ')  // Replace literal \n
-    .replace(/\n/g, ' ')   // Replace actual line breaks
-    .replace(/\r/g, ' ')   // Replace carriage returns
-    .replace(/\s+/g, ' ')  // Replace multiple spaces with single space
+    .replace(/\\n/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\r/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
-}
-
-// Helper function to parse CSV
-function parseCSV(csvText) {
-  const rows = [];
-  let currentRow = [];
-  let currentField = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < csvText.length; i++) {
-    const char = csvText[i];
-    const nextChar = csvText[i + 1];
-    
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        // Escaped quote
-        currentField += '"';
-        i++; // Skip next quote
-      } else {
-        // Toggle quote state
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      // End of field
-      currentRow.push(currentField);
-      currentField = '';
-    } else if ((char === '\n' || char === '\r') && !inQuotes) {
-      // End of row
-      if (char === '\r' && nextChar === '\n') {
-        i++; // Skip \n in \r\n
-      }
-      if (currentField || currentRow.length > 0) {
-        currentRow.push(currentField);
-        rows.push(currentRow);
-        currentRow = [];
-        currentField = '';
-      }
-    } else {
-      currentField += char;
-    }
-  }
-  
-  // Add last field and row
-  if (currentField || currentRow.length > 0) {
-    currentRow.push(currentField);
-    rows.push(currentRow);
-  }
-  
-  return rows;
 }
 
 // Helper function to transform Google Sheets data to Webflow format
@@ -100,8 +118,8 @@ function transformToWebflowFormat(row) {
     "name": row["name"] || "Untitled Event",
     "slug": row["slug"] || null,
     "tags": row["tags"] || null,
-    "rsvp-link": cleanUrl(row["rsvp-link"]),  // Clean URL
-    "short-description": cleanSingleLineText(row["short-description"]),  // Remove line breaks
+    "rsvp-link": cleanUrl(row["rsvp-link"]),
+    "short-description": cleanSingleLineText(row["short-description"]),
     "description": row["description"] || null,
     "venue": row["venue"] || null,
     "location": row["location"] || null,
@@ -114,7 +132,7 @@ function transformToWebflowFormat(row) {
   };
 
   return {
-    id: row["_id"] || null,  // Webflow item ID if updating
+    id: row["_id"] || null,
     fieldData: fieldData
   };
 }
@@ -124,34 +142,36 @@ async function syncGoogleSheetToWebflow() {
   try {
     console.log("Starting sync from Google Sheets to Webflow...");
 
-    // Fetch data from Google Sheets using CSV export (works with "Anyone with link" permission)
-    const sheetUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_NAME)}`;
+    // Get access token
+    console.log("Getting Google access token...");
+    const accessToken = await getGoogleAccessToken();
+
+    // Fetch data from Google Sheets API
+    const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${encodeURIComponent(SHEET_NAME)}`;
     console.log("Fetching from:", sheetUrl);
     
-    const sheetResponse = await fetch(sheetUrl);
+    const sheetResponse = await fetch(sheetUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    });
     
     if (!sheetResponse.ok) {
-      throw new Error(`Google Sheets fetch failed: ${sheetResponse.status} ${sheetResponse.statusText}`);
+      const errorText = await sheetResponse.text();
+      throw new Error(`Google Sheets fetch failed: ${sheetResponse.status} ${sheetResponse.statusText}\n${errorText}`);
     }
     
-    const csvText = await sheetResponse.text();
-    console.log("CSV Response length:", csvText.length);
-    console.log("First 200 chars:", csvText.substring(0, 200));
-    
-    // Parse CSV
-    const csvRows = parseCSV(csvText);
-    
-    if (csvRows.length === 0) {
+    const sheetData = await sheetResponse.json();
+    console.log("Sheet data received:", JSON.stringify(sheetData).substring(0, 200));
+
+    if (!sheetData.values || sheetData.values.length === 0) {
       throw new Error("No data found in Google Sheet");
     }
-    
-    // First row is headers
-    const headers = csvRows[0];
-    console.log("Headers:", headers);
-    
-    // Convert remaining rows to objects
-    const rows = csvRows.slice(1)
-      .filter(row => row.some(cell => cell && cell.trim())) // Filter empty rows
+
+    // Parse Google Sheets data
+    const headers = sheetData.values[0];
+    const rows = sheetData.values.slice(1)
+      .filter(row => row && row.length > 0 && row.some(cell => cell))
       .map(row => {
         const rowData = {};
         headers.forEach((header, index) => {
@@ -161,6 +181,8 @@ async function syncGoogleSheetToWebflow() {
       });
 
     console.log(`Found ${rows.length} rows in Google Sheets`);
+    console.log("Headers:", headers);
+    console.log("First row:", rows[0]);
 
     // Track sync results
     let created = 0;
