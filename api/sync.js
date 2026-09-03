@@ -1,6 +1,21 @@
 const { google } = require('googleapis');
 const { WebflowClient } = require('webflow-api');
 
+// Validate environment variables
+const requiredEnvVars = [
+  'GOOGLE_SERVICE_ACCOUNT',
+  'SPREADSHEET_ID',
+  'SHEET_NAME',
+  'WEBFLOW_API_TOKEN',
+  'WEBFLOW_COLLECTION_ID'
+];
+
+const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  throw new Error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
+}
+
 const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const SHEET_NAME = process.env.SHEET_NAME;
@@ -35,7 +50,7 @@ module.exports = async (req, res) => {
     // Initialize Webflow client
     const webflow = new WebflowClient({ accessToken: WEBFLOW_API_TOKEN });
 
-    // Get existing items to check for duplicates (simplified)
+    // Get existing items to check for duplicates
     let existingEventIds = new Set();
     try {
       const existingResponse = await webflow.collections.items.listItems(WEBFLOW_COLLECTION_ID);
@@ -118,7 +133,7 @@ module.exports = async (req, res) => {
         // Create item in Webflow
         await webflow.collections.items.createItem(WEBFLOW_COLLECTION_ID, itemData);
         created++;
-        existingEventIds.add(rowData.event_id); // Add to set to avoid duplicate attempts
+        existingEventIds.add(rowData.event_id);
 
       } catch (error) {
         errors.push({
