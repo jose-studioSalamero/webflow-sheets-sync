@@ -1,7 +1,6 @@
 const { google } = require('googleapis');
 const { WebflowClient } = require('webflow-api');
 
-// Environment variables
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
@@ -10,7 +9,7 @@ const WEBFLOW_COLLECTION_ID = process.env.WEBFLOW_COLLECTION_ID;
 
 module.exports = async (req, res) => {
   try {
-    // Initialize Google Sheets API
+    // Initialize Google Sheets API with JWT
     const auth = new google.auth.JWT(
       GOOGLE_SERVICE_ACCOUNT_EMAIL,
       null,
@@ -18,12 +17,15 @@ module.exports = async (req, res) => {
       ['https://www.googleapis.com/auth/spreadsheets.readonly']
     );
 
+    // IMPORTANT: Explicitly authorize before using
+    await auth.authorize();
+
     const sheets = google.sheets({ version: 'v4', auth });
 
     // Read data from Google Sheets
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: 'Sheet1!A2:Z', // Adjust range as needed
+      range: 'Sheet1!A2:Z',
     });
 
     const rows = response.data.values;
@@ -44,24 +46,20 @@ module.exports = async (req, res) => {
         fieldData: {
           name: row[0] || '',
           slug: (row[0] || '').toLowerCase().replace(/\s+/g, '-'),
-          // Add more fields as needed based on your sheet structure
         }
       };
 
-      // Check if item already exists (by name or slug)
       const existingItem = existingItems.items?.find(
         item => item.fieldData.slug === itemData.fieldData.slug
       );
 
       if (existingItem) {
-        // Update existing item
         await webflow.collections.items.updateItem(
           WEBFLOW_COLLECTION_ID,
           existingItem.id,
           itemData
         );
       } else {
-        // Create new item
         await webflow.collections.items.createItem(
           WEBFLOW_COLLECTION_ID,
           itemData
@@ -69,7 +67,6 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Publish the collection (optional)
     await webflow.collections.items.publishItem(WEBFLOW_COLLECTION_ID);
 
     res.status(200).json({ 
