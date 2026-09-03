@@ -1,7 +1,8 @@
 // Configuration
 const GOOGLE_SHEET_ID = "1fymh7kY8cme4rYP3Tb7g1YzzxnJI2pc9o9dXHTPCGfU";
 const SHEET_NAME = "Untitled";
-const WEBFLOW_COLLECTION_ID = "66f6f0b3c9e1dc700a85a10d";
+const WEBFLOW_SITE_ID = "6a705d088ea81dba5d21cc45";
+const WEBFLOW_COLLECTION_ID = "6a79abe171f09344bb01ff15"; // Events collection
 const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
 
 // Helper function to create JWT for Google API
@@ -135,6 +136,11 @@ function transformToWebflowFormat(row) {
   };
 }
 
+// Helper function to add delay between requests
+async function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Main sync function
 async function syncGoogleSheetToWebflow() {
   try {
@@ -176,8 +182,6 @@ async function syncGoogleSheetToWebflow() {
       });
 
     console.log(`Found ${rows.length} rows in Google Sheets`);
-    console.log("Headers:", headers);
-    console.log("First row sample:", rows[0]);
 
     let created = 0;
     let updated = 0;
@@ -222,15 +226,15 @@ async function syncGoogleSheetToWebflow() {
 
           if (updateResponse.ok) {
             updated++;
-            console.log(`Updated: ${row["title"]} (${row["event_id"]})`);
+            console.log(`✅ Updated: ${row["title"]}`);
           } else {
             const errorData = await updateResponse.json();
             errors.push({
               event_id: row["event_id"],
               title: row["title"],
-              error: `${errorData.message || 'Update failed'}`
+              error: errorData.message || 'Update failed'
             });
-            console.error(`Error updating ${row["title"]}:`, errorData);
+            console.error(`❌ Error updating ${row["title"]}:`, errorData);
           }
         } else {
           const createResponse = await fetch(
@@ -248,19 +252,20 @@ async function syncGoogleSheetToWebflow() {
 
           if (createResponse.ok) {
             created++;
-            console.log(`Created: ${row["title"]} (${row["event_id"]})`);
+            console.log(`✅ Created: ${row["title"]}`);
           } else {
             const errorData = await createResponse.json();
             errors.push({
               event_id: row["event_id"],
               title: row["title"],
-              error: `${errorData.message || 'Create failed'}`
+              error: errorData.message || 'Create failed'
             });
-            console.error(`Error creating ${row["title"]}:`, errorData);
+            console.error(`❌ Error creating ${row["title"]}:`, errorData);
           }
         }
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Add 500ms delay between requests to avoid rate limiting
+        await delay(500);
 
       } catch (error) {
         errors.push({
