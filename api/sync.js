@@ -1,310 +1,216 @@
-// Configuration
-const GOOGLE_SHEET_ID = "1fymh7kY8cme4rYP3Tb7g1YzzxnJI2pc9o9dXHTPCGfU";
-const SHEET_NAME = "Untitled";
-const WEBFLOW_SITE_ID = "6a705d088ea81dba5d21cc45";
-const WEBFLOW_COLLECTION_ID = "6a79abe171f09344bb01ff15"; // Events collection
-const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
+const { GoogleAuth } = require('google-auth-library');
 
-// Helper function to create JWT for Google API
-function createJWT(serviceAccount) {
-  const header = {
-    alg: "RS256",
-    typ: "JWT"
-  };
+const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
+const WEBFLOW_COLLECTION_ID = process.env.WEBFLOW_COLLECTION_ID;
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: serviceAccount.client_email,
-    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
-    aud: "https://oauth2.googleapis.com/token",
-    exp: now + 3600,
-    iat: now
-  };
-
-  const base64UrlEncode = (obj) => {
-    return Buffer.from(JSON.stringify(obj))
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-  };
-
-  const headerEncoded = base64UrlEncode(header);
-  const payloadEncoded = base64UrlEncode(payload);
-  const signatureInput = `${headerEncoded}.${payloadEncoded}`;
-
-  const crypto = require('crypto');
-  const sign = crypto.createSign('RSA-SHA256');
-  sign.update(signatureInput);
-  const signature = sign.sign(serviceAccount.private_key, 'base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-
-  return `${signatureInput}.${signature}`;
+function parseDateTime(dateStr, timeStr) {
+  if (!dateStr) return null;
+  
+  try {
+    // Parse date in format like "9/6/2024"
+    const [month, day, year] = dateStr.split('/').map(Number);
+    
+    // Parse time if provided, otherwise use midnight
+    let hours = 0, minutes = 0;
+    if (timeStr) {
+      const timeMatch = timeStr.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1]);
+        minutes = parseInt(timeMatch[2]);
+        const period = timeMatch[3];
+        
+        if (period && period.toUpperCase() === 'PM' && hours !== 12) {
+          hours += 12;
+        } else if (period && period.toUpperCase() === 'AM' && hours === 12) {
+          hours = 0;
+        }
+      }
+    }
+    
+    // Create date in Hong Kong timezone (UTC+8)
+    const date = new Date(year, month - 1, day, hours, minutes);
+    return date.toISOString();
+  } catch (error) {
+    console.error('Date parse error:', error, dateStr, timeStr);
+    return null;
+  }
 }
 
-// Get access token from Google
-async function getGoogleAccessToken() {
-  const serviceAccountKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+function createSlug(title, eventId) {
+  if (!title) return `event-${eventId}`;
   
-  if (!serviceAccountKey) {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY environment variable not set");
-  }
+  return title
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '') // Remove special characters
+    .replace(/\s+/g, '-')      // Replace spaces with hyphens
+    .replace(/-+/g, '-')       // Replace multiple hyphens with single
+    .substring(0, 100)         // Limit length
+    + `-${eventId}`;           // Add unique ID
+}
 
-  const serviceAccount = JSON.parse(serviceAccountKey);
-  const jwt = createJWT(serviceAccount);
-
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
+async function getGoogleSheetsData() {
+  const auth = new GoogleAuth({
+    credentials: {
+      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      private_key: GOOGLE_PRIVATE_KEY,
     },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: jwt
-    })
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
 
+  const client = await auth.getClient();
+  const accessToken = await client.getAccessToken();
+
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/Events!A:I`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken.token}`,
+      },
+    }
+  );
+
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to get access token: ${error}`);
+    throw new Error(`Google Sheets fetch failed: ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json();
-  return data.access_token;
+  return data.values || [];
 }
 
-// Helper function to clean and validate URL
-function cleanUrl(value) {
-  if (!value) return null;
+async function createOrUpdateWebflowItem(event) {
+  const eventId = event['Event ID']?.toString();
+  const title = event['Event Title'];
   
-  if (typeof value === 'object') {
-    if (value.url) return value.url;
-    if (value.href) return value.href;
-    return null;
+  if (!title || !eventId) {
+    return { success: false, error: 'Missing required fields: title or event ID' };
   }
-  
-  const urlString = String(value).trim();
-  
-  if (!urlString || urlString === '') return null;
-  
+
+  const slug = createSlug(title, eventId);
+  const startDateTime = parseDateTime(event['Start Date'], event['Start Time']);
+  const endDateTime = parseDateTime(event['End Date'], event['End Time']);
+
+  const itemData = {
+    fieldData: {
+      "name": title,
+      "slug": slug,
+      "start-date-time": startDateTime,
+      "end-date-time": endDateTime,
+      "location": event['Location'] || null,
+      "short-description": event['Short Description'] || null,
+      "description": event['Description'] || null,
+      "rsvp-link": event['RSVP Link'] || null,
+    }
+  };
+
+  // Remove null values
+  Object.keys(itemData.fieldData).forEach(key => {
+    if (itemData.fieldData[key] === null || itemData.fieldData[key] === '') {
+      delete itemData.fieldData[key];
+    }
+  });
+
   try {
-    new URL(urlString);
-    return urlString;
-  } catch (e) {
-    console.log(`Invalid URL: ${urlString}`);
-    return null;
+    // Try to create new item
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+          "Content-Type": "application/json",
+          "accept-version": "1.0.0"
+        },
+        body: JSON.stringify(itemData)
+      }
+    );
+
+    const responseData = await response.json();
+
+    if (response.ok) {
+      return { success: true, action: 'created', data: responseData };
+    } else {
+      return { 
+        success: false, 
+        error: responseData.message || JSON.stringify(responseData) 
+      };
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 }
 
-// Helper function to clean single-line text (remove line breaks)
-function cleanSingleLineText(value) {
-  if (!value) return null;
-  
-  return String(value)
-    .replace(/\\n/g, ' ')
-    .replace(/\n/g, ' ')
-    .replace(/\r/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Helper function to transform Google Sheets data to Webflow format
-function transformToWebflowFormat(row) {
-  const fieldData = {
-    "event-id": row["event_id"] || null,
-    "name": row["title"] || "Untitled Event",
-    "slug": row["title"] ? row["title"].toLowerCase().replace(/[^a-z0-9]+/g, '-') : null,
-    "tags": row["brand"] || null,
-    "rsvp-link": cleanUrl(row["eventbrite_url"]),
-    "short-description": cleanSingleLineText(row["summary"]),
-    "description": row["summary"] || null,
-    "venue": row["venue_name"] || null,
-    "location": row["venue_name"] || null,
-    "start-date": row["start_datetime"] || null,
-    "end-date": row["end_datetime"] || null,
-    "organizer-email": null,
-    "ticket-required": row["is_free"] === "FALSE" || row["is_free"] === false,
-    "going": 0,
-    "capacity": 0
-  };
-
-  return {
-    id: row["_id"] || null,
-    fieldData: fieldData
-  };
-}
-
-// Helper function to add delay between requests
-async function delay(ms) {
+function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Main sync function
-async function syncGoogleSheetToWebflow() {
-  try {
-    console.log("Starting sync from Google Sheets to Webflow...");
-
-    console.log("Getting Google access token...");
-    const accessToken = await getGoogleAccessToken();
-
-    const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${encodeURIComponent(SHEET_NAME)}`;
-    console.log("Fetching from:", sheetUrl);
-    
-    const sheetResponse = await fetch(sheetUrl, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`
-      }
-    });
-    
-    if (!sheetResponse.ok) {
-      const errorText = await sheetResponse.text();
-      throw new Error(`Google Sheets fetch failed: ${sheetResponse.status} ${sheetResponse.statusText}\n${errorText}`);
-    }
-    
-    const sheetData = await sheetResponse.json();
-    console.log("Sheet data received");
-
-    if (!sheetData.values || sheetData.values.length === 0) {
-      throw new Error("No data found in Google Sheet");
-    }
-
-    const headers = sheetData.values[0];
-    const rows = sheetData.values.slice(1)
-      .filter(row => row && row.length > 0 && row.some(cell => cell))
-      .map(row => {
-        const rowData = {};
-        headers.forEach((header, index) => {
-          rowData[header] = row[index] || null;
-        });
-        return rowData;
-      });
-
-    console.log(`Found ${rows.length} rows in Google Sheets`);
-
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
-    let errors = [];
-
-    for (const row of rows) {
-      try {
-        if (!row["event_id"]) {
-          skipped++;
-          continue;
-        }
-
-        const webflowItem = transformToWebflowFormat(row);
-
-        const existingItemResponse = await fetch(
-          `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items?fieldData.event-id=${row["event_id"]}`,
-          {
-            headers: {
-              Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
-              "accept-version": "1.0.0"
-            }
-          }
-        );
-
-        const existingItems = await existingItemResponse.json();
-
-        if (existingItems.items && existingItems.items.length > 0) {
-          const itemId = existingItems.items[0].id;
-          const updateResponse = await fetch(
-            `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items/${itemId}`,
-            {
-              method: "PATCH",
-              headers: {
-                Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
-                "Content-Type": "application/json",
-                "accept-version": "1.0.0"
-              },
-              body: JSON.stringify({ fieldData: webflowItem.fieldData })
-            }
-          );
-
-          if (updateResponse.ok) {
-            updated++;
-            console.log(`✅ Updated: ${row["title"]}`);
-          } else {
-            const errorData = await updateResponse.json();
-            errors.push({
-              event_id: row["event_id"],
-              title: row["title"],
-              error: errorData.message || 'Update failed'
-            });
-            console.error(`❌ Error updating ${row["title"]}:`, errorData);
-          }
-        } else {
-          const createResponse = await fetch(
-            `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
-                "Content-Type": "application/json",
-                "accept-version": "1.0.0"
-              },
-              body: JSON.stringify({ fieldData: webflowItem.fieldData })
-            }
-          );
-
-          if (createResponse.ok) {
-            created++;
-            console.log(`✅ Created: ${row["title"]}`);
-          } else {
-            const errorData = await createResponse.json();
-            errors.push({
-              event_id: row["event_id"],
-              title: row["title"],
-              error: errorData.message || 'Create failed'
-            });
-            console.error(`❌ Error creating ${row["title"]}:`, errorData);
-          }
-        }
-
-        // Add 500ms delay between requests to avoid rate limiting
-        await delay(500);
-
-      } catch (error) {
-        errors.push({
-          event_id: row["event_id"],
-          title: row["title"],
-          error: error.message
-        });
-        console.error(`Error processing ${row["title"]}:`, error);
-      }
-    }
-
-    return {
-      success: true,
-      created,
-      updated,
-      skipped,
-      total: rows.length,
-      errors
-    };
-
-  } catch (error) {
-    console.error("Sync failed:", error);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-}
-
-// Vercel serverless function handler
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    const result = await syncGoogleSheetToWebflow();
-    res.status(200).json(result);
+    // Fetch data from Google Sheets
+    const rows = await getGoogleSheetsData();
+    
+    if (rows.length === 0) {
+      return res.status(200).json({ 
+        success: true, 
+        message: 'No data in sheet',
+        total: 0 
+      });
+    }
+
+    // Parse headers and data
+    const headers = rows[0];
+    const dataRows = rows.slice(1);
+
+    const events = dataRows.map(row => {
+      const event = {};
+      headers.forEach((header, index) => {
+        event[header] = row[index] || '';
+      });
+      return event;
+    });
+
+    // Process events with rate limiting
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const event of events) {
+      const result = await createOrUpdateWebflowItem(event);
+      
+      if (result.success) {
+        if (result.action === 'created') created++;
+        else if (result.action === 'updated') updated++;
+      } else {
+        errors.push({
+          event_id: event['Event ID'],
+          title: event['Event Title'],
+          error: result.error
+        });
+        skipped++;
+      }
+
+      // Rate limiting: 2 requests per second max
+      await sleep(600);
+    }
+
+    res.status(200).json({
+      success: true,
+      created,
+      updated,
+      skipped,
+      total: events.length,
+      errors: errors.slice(0, 10) // Only return first 10 errors
+    });
+
   } catch (error) {
+    console.error('Sync error:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
