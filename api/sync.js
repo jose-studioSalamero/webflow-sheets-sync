@@ -44,6 +44,55 @@ function cleanSingleLineText(value) {
     .trim();
 }
 
+// Helper function to parse CSV
+function parseCSV(csvText) {
+  const rows = [];
+  let currentRow = [];
+  let currentField = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+    
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote
+        currentField += '"';
+        i++; // Skip next quote
+      } else {
+        // Toggle quote state
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      // End of field
+      currentRow.push(currentField);
+      currentField = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      // End of row
+      if (char === '\r' && nextChar === '\n') {
+        i++; // Skip \n in \r\n
+      }
+      if (currentField || currentRow.length > 0) {
+        currentRow.push(currentField);
+        rows.push(currentRow);
+        currentRow = [];
+        currentField = '';
+      }
+    } else {
+      currentField += char;
+    }
+  }
+  
+  // Add last field and row
+  if (currentField || currentRow.length > 0) {
+    currentRow.push(currentField);
+    rows.push(currentRow);
+  }
+  
+  return rows;
+}
+
 // Helper function to transform Google Sheets data to Webflow format
 function transformToWebflowFormat(row) {
   const fieldData = {
@@ -75,8 +124,8 @@ async function syncGoogleSheetToWebflow() {
   try {
     console.log("Starting sync from Google Sheets to Webflow...");
 
-    // Fetch data from Google Sheets
-    const sheetUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}`;
+    // Fetch data from Google Sheets using CSV export (works with "Anyone with link" permission)
+    const sheetUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_NAME)}`;
     console.log("Fetching from:", sheetUrl);
     
     const sheetResponse = await fetch(sheetUrl);
@@ -85,27 +134,31 @@ async function syncGoogleSheetToWebflow() {
       throw new Error(`Google Sheets fetch failed: ${sheetResponse.status} ${sheetResponse.statusText}`);
     }
     
-    const sheetText = await sheetResponse.text();
-    console.log("Response length:", sheetText.length);
-    console.log("First 100 chars:", sheetText.substring(0, 100));
+    const csvText = await sheetResponse.text();
+    console.log("CSV Response length:", csvText.length);
+    console.log("First 200 chars:", csvText.substring(0, 200));
     
-    // Google Sheets API returns JSONP, we need to extract the JSON
-    const jsonMatch = sheetText.match(/google\.visualization\.Query\.setResponse\((.*)\);?$/);
-    if (!jsonMatch) {
-      throw new Error("Could not parse Google Sheets response. Make sure the sheet is publicly accessible.");
+    // Parse CSV
+    const csvRows = parseCSV(csvText);
+    
+    if (csvRows.length === 0) {
+      throw new Error("No data found in Google Sheet");
     }
     
-    const jsonData = JSON.parse(jsonMatch[1]);
-
-    // Parse Google Sheets data
-    const headers = jsonData.table.cols.map(col => col.label);
-    const rows = jsonData.table.rows.map(row => {
-      const rowData = {};
-      row.c.forEach((cell, index) => {
-        rowData[headers[index]] = cell ? cell.v : null;
+    // First row is headers
+    const headers = csvRows[0];
+    console.log("Headers:", headers);
+    
+    // Convert remaining rows to objects
+    const rows = csvRows.slice(1)
+      .filter(row => row.some(cell => cell && cell.trim())) // Filter empty rows
+      .map(row => {
+        const rowData = {};
+        headers.forEach((header, index) => {
+          rowData[header] = row[index] || null;
+        });
+        return rowData;
       });
-      return rowData;
-    });
 
     console.log(`Found ${rows.length} rows in Google Sheets`);
 
