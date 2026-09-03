@@ -76,11 +76,26 @@ async function syncGoogleSheetToWebflow() {
     console.log("Starting sync from Google Sheets to Webflow...");
 
     // Fetch data from Google Sheets
-    const sheetResponse = await fetch(
-      `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${SHEET_NAME}`
-    );
+    const sheetUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}`;
+    console.log("Fetching from:", sheetUrl);
+    
+    const sheetResponse = await fetch(sheetUrl);
+    
+    if (!sheetResponse.ok) {
+      throw new Error(`Google Sheets fetch failed: ${sheetResponse.status} ${sheetResponse.statusText}`);
+    }
+    
     const sheetText = await sheetResponse.text();
-    const jsonData = JSON.parse(sheetText.substring(47, sheetText.length - 2));
+    console.log("Response length:", sheetText.length);
+    console.log("First 100 chars:", sheetText.substring(0, 100));
+    
+    // Google Sheets API returns JSONP, we need to extract the JSON
+    const jsonMatch = sheetText.match(/google\.visualization\.Query\.setResponse\((.*)\);?$/);
+    if (!jsonMatch) {
+      throw new Error("Could not parse Google Sheets response. Make sure the sheet is publicly accessible.");
+    }
+    
+    const jsonData = JSON.parse(jsonMatch[1]);
 
     // Parse Google Sheets data
     const headers = jsonData.table.cols.map(col => col.label);
