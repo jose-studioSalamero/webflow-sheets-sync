@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "api/sync.js": { "maxDuration": 300 },
+    "api/cron.js": { "maxDuration": 300 },
+    "api/watch.js": { "maxDuration": 60 },
+    "api/sheets-webhook.js": { "maxDuration": 300 }
+  },
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}
