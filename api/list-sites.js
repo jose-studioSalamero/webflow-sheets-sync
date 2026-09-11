@@ -1,12 +1,19 @@
-const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
+const { getConfig, missingConfig } = require('../lib/config');
 
 export default async function handler(req, res) {
   try {
+    const missing = missingConfig(['webflowToken']);
+    if (missing.length) {
+      return res.status(500).json({ error: `Missing environment variables: ${missing.join(', ')}` });
+    }
+
+    const { webflowToken } = getConfig();
+
     const response = await fetch(
       'https://api.webflow.com/v2/sites',
       {
         headers: {
-          Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+          Authorization: `Bearer ${webflowToken}`,
           "accept-version": "1.0.0"
         }
       }

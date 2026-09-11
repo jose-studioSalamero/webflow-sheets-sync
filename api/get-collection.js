@@ -1,21 +1,23 @@
 const { WebflowClient } = require('webflow-api');
-
-const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
-const WEBFLOW_COLLECTION_ID = process.env.WEBFLOW_COLLECTION_ID;
+const { getConfig, missingConfig } = require('../lib/config');
 
 module.exports = async (req, res) => {
   try {
-    const webflow = new WebflowClient({ accessToken: WEBFLOW_API_TOKEN });
+    const missing = missingConfig(['webflowToken', 'webflowCollectionId']);
+    if (missing.length) {
+      return res.status(500).json({ error: `Missing environment variables: ${missing.join(', ')}` });
+    }
+
+    const { webflowToken, webflowCollectionId } = getConfig();
+    const webflow = new WebflowClient({ accessToken: webflowToken });
     
-    // Get collection details including field names
-    const collection = await webflow.collections.get(WEBFLOW_COLLECTION_ID);
+    const collection = await webflow.collections.get(webflowCollectionId);
     
     res.status(200).json(collection);
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ 
       error: error.message,
-      details: error.stack
     });
   }
 };

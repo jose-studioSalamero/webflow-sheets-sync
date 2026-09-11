@@ -1,13 +1,19 @@
-const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
-const WEBFLOW_SITE_ID = "6a705d088ea81dba5d21cc45"; // Correct site ID
+const { getConfig, missingConfig } = require('../lib/config');
 
 export default async function handler(req, res) {
   try {
+    const missing = missingConfig(['webflowToken', 'webflowSiteId']);
+    if (missing.length) {
+      return res.status(500).json({ error: `Missing environment variables: ${missing.join(', ')}` });
+    }
+
+    const { webflowToken, webflowSiteId } = getConfig();
+
     const response = await fetch(
-      `https://api.webflow.com/v2/sites/${WEBFLOW_SITE_ID}/collections`,
+      `https://api.webflow.com/v2/sites/${webflowSiteId}/collections`,
       {
         headers: {
-          Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+          Authorization: `Bearer ${webflowToken}`,
           "accept-version": "1.0.0"
         }
       }

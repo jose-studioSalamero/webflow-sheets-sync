@@ -1,5 +1,4 @@
-const WEBFLOW_API_TOKEN = "673bbe492ec8c898ffca8e522c988924af51a02681d70bc724cd7de4e0250469";
-const WEBFLOW_COLLECTION_ID = "6a79abe171f09344bb01ff15";
+const { getConfig, missingConfig } = require('../lib/config');
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -7,6 +6,13 @@ export default async function handler(req, res) {
   }
 
   try {
+    const missing = missingConfig(['webflowToken', 'webflowCollectionId']);
+    if (missing.length) {
+      return res.status(500).json({ error: `Missing environment variables: ${missing.join(', ')}` });
+    }
+
+    const { webflowToken, webflowCollectionId } = getConfig();
+
     // Test with minimal data
     const testData = {
       fieldData: {
@@ -18,11 +24,11 @@ export default async function handler(req, res) {
     console.log("Sending:", JSON.stringify(testData, null, 2));
 
     const response = await fetch(
-      `https://api.webflow.com/v2/collections/${WEBFLOW_COLLECTION_ID}/items`,
+      `https://api.webflow.com/v2/collections/${webflowCollectionId}/items`,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
+          Authorization: `Bearer ${webflowToken}`,
           "Content-Type": "application/json",
           "accept-version": "1.0.0"
         },

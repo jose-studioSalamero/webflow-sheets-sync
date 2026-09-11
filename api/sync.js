@@ -1,19 +1,13 @@
 const { GoogleAuth } = require('google-auth-library');
-
-const WEBFLOW_TOKEN = process.env.WEBFLOW_TOKEN;
-const SITE_ID = '6a705d088ea81dba5d21cc45';
-const COLLECTION_ID = '6a79abe171f09344bb01ff15';
-const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+const { getConfig, missingConfig } = require('../lib/config');
 
 const SHEET_TAB = 'Untitled'; // The actual sheet tab name
 
-async function fetchGoogleSheetData() {
+async function fetchGoogleSheetData({ googleSheetId, googleServiceAccountEmail, googlePrivateKey }) {
   const auth = new GoogleAuth({
     credentials: {
-      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: GOOGLE_PRIVATE_KEY,
+      client_email: googleServiceAccountEmail,
+      private_key: googlePrivateKey,
     },
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
@@ -22,7 +16,7 @@ async function fetchGoogleSheetData() {
   const accessToken = await client.getAccessToken();
 
   const range = `${SHEET_TAB}!A:Z`; // Get all columns
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${googleSheetId}/values/${encodeURIComponent(range)}`;
 
   const response = await fetch(url, {
     headers: {
@@ -80,8 +74,21 @@ export default async function handler(req, res) {
   }
 
   try {
+    const missing = missingConfig([
+      'webflowToken',
+      'webflowCollectionId',
+      'googleSheetId',
+      'googleServiceAccountEmail',
+      'googlePrivateKey',
+    ]);
+    if (missing.length) {
+      return res.status(500).json({ error: `Missing environment variables: ${missing.join(', ')}` });
+    }
+
+    const config = getConfig();
+
     // Fetch data from Google Sheet
-    const rows = await fetchGoogleSheetData();
+    const rows = await fetchGoogleSheetData(config);
     
     if (rows.length < 2) {
       return res.status(400).json({ error: 'Sheet has no data' });
@@ -145,11 +152,11 @@ export default async function handler(req, res) {
 
         // Create item in Webflow
         const webflowResponse = await fetch(
-          `https://api.webflow.com/v2/collections/${COLLECTION_ID}/items`,
+          `https://api.webflow.com/v2/collections/${config.webflowCollectionId}/items`,
           {
             method: 'POST',
             headers: {
-              'Authorization': `Bearer ${WEBFLOW_TOKEN}`,
+              'Authorization': `Bearer ${config.webflowToken}`,
               'Content-Type': 'application/json',
               'accept': 'application/json',
             },
