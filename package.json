@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Sync Google Sheets to Webflow CMS",
   "main": "api/sync.js",
+  "scripts": {
+    "test": "node --test lib/*.test.js"
+  },
   "dependencies": {
     "google-auth-library": "^10.5.0",
     "googleapis": "^178.0.0",
